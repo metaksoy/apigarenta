@@ -134,6 +134,7 @@ exports.handler = async function (event, context) {
       4: "Prestij",
     };
 
+<<<<<<< HEAD
     // Use all branches in the city
     const branchesToSearch = branchesInCity;
     console.log(
@@ -142,6 +143,18 @@ exports.handler = async function (event, context) {
 
     // Function to search a single branch
     const searchBranch = async (branch) => {
+=======
+    // Limit the number of branches to search to avoid timeout
+    // We'll search in up to 5 branches in parallel
+    const branchesToSearch =
+      branchesInCity.length > 5 ? branchesInCity.slice(0, 5) : branchesInCity;
+    console.log(
+      `Searching in ${branchesToSearch.length} branches out of ${branchesInCity.length} total branches for ${citySlug}`
+    );
+
+    // Use Promise.all to make API calls in parallel instead of sequentially
+    const searchPromises = branchesToSearch.map(async (branch) => {
+>>>>>>> 14fa55f254a4b209d9e72225f8e23841f1a8b95a
       const payload = {
         branchId: branch.branchId,
         locationId: branch.locationId,
@@ -177,6 +190,7 @@ exports.handler = async function (event, context) {
             searchData.data.vehicles &&
             Array.isArray(searchData.data.vehicles)
           ) {
+<<<<<<< HEAD
             // Limit to first 5 vehicles per branch to avoid timeout
             const limitedVehicles = searchData.data.vehicles.slice(0, 5);
 
@@ -191,6 +205,20 @@ exports.handler = async function (event, context) {
                 const segmentName =
                   segmentMap[vehicleInfo.segment] || "Bilinmiyor";
 
+=======
+            // Process all vehicles from this branch
+            searchData.data.vehicles.forEach((vehicle) => {
+              if (vehicle.vehicleInfo && vehicle.priceInfo) {
+                const vehicleInfo = vehicle.vehicleInfo;
+                const priceInfo = vehicle.priceInfo;
+
+                const fuelType = fuelMap[vehicleInfo.fuelType] || "Bilinmiyor";
+                const transmissionType =
+                  transmissionMap[vehicleInfo.transmissionType] || "Bilinmiyor";
+                const segmentName =
+                  segmentMap[vehicleInfo.segment] || "Bilinmiyor";
+
+>>>>>>> 14fa55f254a4b209d9e72225f8e23841f1a8b95a
                 branchVehicles.push({
                   brand_model: vehicleInfo.vehicleDescription || "N/A",
                   fuel: fuelType,
@@ -213,6 +241,7 @@ exports.handler = async function (event, context) {
             });
           }
           return branchVehicles;
+<<<<<<< HEAD
         }
         return [];
       } catch (error) {
@@ -269,9 +298,17 @@ exports.handler = async function (event, context) {
         if (i < chunks.length - 1) {
           console.log(`Waiting 200ms before processing next chunk...`);
           await new Promise((resolve) => setTimeout(resolve, 200));
+=======
+>>>>>>> 14fa55f254a4b209d9e72225f8e23841f1a8b95a
         }
+        return [];
+      } catch (error) {
+        console.error(`Error searching branch ${branch.name}:`, error);
+        return [];
       }
+    });
 
+<<<<<<< HEAD
       return allVehicles;
     };
 
@@ -289,6 +326,13 @@ exports.handler = async function (event, context) {
       5,
       useParallel
     );
+=======
+    // Wait for all search promises to resolve
+    const vehicleArrays = await Promise.all(searchPromises);
+
+    // Flatten the array of arrays into a single array
+    const allVehiclesFromBranches = vehicleArrays.flat();
+>>>>>>> 14fa55f254a4b209d9e72225f8e23841f1a8b95a
 
     // Filter out vehicles with null price_pay_now
     const filteredVehicles = allVehiclesFromBranches.filter(
@@ -316,7 +360,11 @@ exports.handler = async function (event, context) {
         searchedBranches: branchesToSearch.length,
 
         totalBranches: branchesInCity.length,
+<<<<<<< HEAD
         parallelSearch: branchesInCity.length > 3,
+=======
+        limitedSearch: branchesInCity.length > 5,
+>>>>>>> 14fa55f254a4b209d9e72225f8e23841f1a8b95a
       }),
     };
   } catch (error) {
