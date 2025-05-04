@@ -111,9 +111,6 @@ exports.handler = async function (event, context) {
       };
     }
 
-    // Step 2: Search vehicles in each branch
-    const allVehicles = [];
-
     // Map fuel type codes to names
     const fuelMap = {
       1: "Benzin",
@@ -137,8 +134,14 @@ exports.handler = async function (event, context) {
       4: "Prestij",
     };
 
-    // Search vehicles in each branch
-    for (const branch of branchesInCity) {
+    // Use all branches in the city
+    const branchesToSearch = branchesInCity;
+    console.log(
+      `Searching in ${branchesToSearch.length} branches for ${citySlug}`
+    );
+
+    // Function to search a single branch
+    const searchBranch = async (branch) => {
       const payload = {
         branchId: branch.branchId,
         locationId: branch.locationId,
@@ -158,60 +161,137 @@ exports.handler = async function (event, context) {
         "Content-Type": "application/json",
       };
 
-      const searchResponse = await fetch(`${BASE_URI}Search`, {
-        method: "POST",
-        headers: searchHeaders,
-        body: JSON.stringify(payload),
-      });
+      try {
+        const searchResponse = await fetch(`${BASE_URI}Search`, {
+          method: "POST",
+          headers: searchHeaders,
+          body: JSON.stringify(payload),
+        });
 
-      if (searchResponse.ok) {
-        const searchData = await searchResponse.json();
+        if (searchResponse.ok) {
+          const searchData = await searchResponse.json();
 
-        if (
-          searchData.data &&
-          searchData.data.vehicles &&
-          Array.isArray(searchData.data.vehicles)
-        ) {
-          searchData.data.vehicles.forEach((vehicle) => {
-            if (vehicle.vehicleInfo && vehicle.priceInfo) {
-              const vehicleInfo = vehicle.vehicleInfo;
-              const priceInfo = vehicle.priceInfo;
+          const branchVehicles = [];
+          if (
+            searchData.data &&
+            searchData.data.vehicles &&
+            Array.isArray(searchData.data.vehicles)
+          ) {
+            // Limit to first 5 vehicles per branch to avoid timeout
+            const limitedVehicles = searchData.data.vehicles.slice(0, 5);
 
-              const fuelType = fuelMap[vehicleInfo.fuelType] || "Bilinmiyor";
-              const transmissionType =
-                transmissionMap[vehicleInfo.transmissionType] || "Bilinmiyor";
-              const segmentName =
-                segmentMap[vehicleInfo.segment] || "Bilinmiyor";
+            limitedVehicles.forEach((vehicle) => {
+              if (vehicle.vehicleInfo && vehicle.priceInfo) {
+                const vehicleInfo = vehicle.vehicleInfo;
+                const priceInfo = vehicle.priceInfo;
 
-              allVehicles.push({
-                brand_model: vehicleInfo.vehicleDescription || "N/A",
-                fuel: fuelType,
-                gear: transmissionType,
-                segment_name: segmentName,
-                price_pay_now_str: priceInfo.discountedPriceStr || "N/A",
-                price_pay_office_str: priceInfo.netPriceStr || "N/A",
-                price_pay_now: priceInfo.discountedPrice || null,
-                price_pay_office: priceInfo.netPrice || null,
-                daily_price: priceInfo.dailyPrice || null,
-                daily_price_str: priceInfo.dailyPriceStr || "N/A",
-                currency: "TRY",
-                image: vehicleInfo.image || null,
-                branch_id: branch.branchId,
-                location_id: branch.locationId,
-                branch_name: branch.name,
-                city_slug: branch.citySlug,
-              });
-            }
-          });
+                const fuelType = fuelMap[vehicleInfo.fuelType] || "Bilinmiyor";
+                const transmissionType =
+                  transmissionMap[vehicleInfo.transmissionType] || "Bilinmiyor";
+                const segmentName =
+                  segmentMap[vehicleInfo.segment] || "Bilinmiyor";
+
+                branchVehicles.push({
+                  brand_model: vehicleInfo.vehicleDescription || "N/A",
+                  fuel: fuelType,
+                  gear: transmissionType,
+                  segment_name: segmentName,
+                  price_pay_now_str: priceInfo.discountedPriceStr || "N/A",
+                  price_pay_office_str: priceInfo.netPriceStr || "N/A",
+                  price_pay_now: priceInfo.discountedPrice || null,
+                  price_pay_office: priceInfo.netPrice || null,
+                  daily_price: priceInfo.dailyPrice || null,
+                  daily_price_str: priceInfo.dailyPriceStr || "N/A",
+                  currency: "TRY",
+                  image: vehicleInfo.image || null,
+                  branch_id: branch.branchId,
+                  location_id: branch.locationId,
+                  branch_name: branch.name,
+                  city_slug: branch.citySlug,
+                });
+              }
+            });
+          }
+          return branchVehicles;
+        }
+        return [];
+      } catch (error) {
+        console.error(`Error searching branch ${branch.name}:`, error);
+        return [];
+      }
+    };
+
+    // Function to process branches in chunks with delay between chunks
+    const processBranchesInChunks = async (
+      branches,
+      chunkSize,
+      useParallel
+    ) => {
+      const allVehicles = [];
+      const chunks = [];
+
+      // Split branches into chunks of chunkSize
+      for (let i = 0; i < branches.length; i += chunkSize) {
+        chunks.push(branches.slice(i, i + chunkSize));
+      }
+
+      console.log(
+        `Processing ${branches.length} branches in ${chunks.length} chunks of ${chunkSize}`
+      );
+
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        console.log(
+          `Processing chunk ${i + 1}/${chunks.length} with ${
+            chunk.length
+          } branches`
+        );
+
+        let chunkResults;
+
+        if (useParallel) {
+          // Process branches in this chunk in parallel
+          const chunkPromises = chunk.map((branch) => searchBranch(branch));
+          chunkResults = await Promise.all(chunkPromises);
+        } else {
+          // Process branches in this chunk sequentially
+          chunkResults = [];
+          for (const branch of chunk) {
+            const result = await searchBranch(branch);
+            chunkResults.push(result);
+          }
+        }
+
+        // Add results from this chunk to all vehicles
+        allVehicles.push(...chunkResults.flat());
+
+        // Add delay between chunks (except after the last chunk)
+        if (i < chunks.length - 1) {
+          console.log(`Waiting 200ms before processing next chunk...`);
+          await new Promise((resolve) => setTimeout(resolve, 200));
         }
       }
 
-      // Add a small delay between requests to avoid rate limiting
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
+      return allVehicles;
+    };
+
+    // Determine whether to use parallel requests based on branch count
+    const useParallel = branchesToSearch.length > 3;
+    console.log(
+      `Using ${useParallel ? "parallel" : "sequential"} requests for ${
+        branchesToSearch.length
+      } branches`
+    );
+
+    // Process branches in chunks of 5 with 200ms delay between chunks
+    const allVehiclesFromBranches = await processBranchesInChunks(
+      branchesToSearch,
+      5,
+      useParallel
+    );
 
     // Filter out vehicles with null price_pay_now
-    const filteredVehicles = allVehicles.filter(
+    const filteredVehicles = allVehiclesFromBranches.filter(
       (vehicle) =>
         vehicle.price_pay_now !== null && vehicle.price_pay_now !== undefined
     );
@@ -233,6 +313,10 @@ exports.handler = async function (event, context) {
         success: true,
         data: filteredVehicles,
         total: filteredVehicles.length,
+        searchedBranches: branchesToSearch.length,
+
+        totalBranches: branchesInCity.length,
+        parallelSearch: branchesInCity.length > 3,
       }),
     };
   } catch (error) {
