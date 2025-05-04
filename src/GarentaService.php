@@ -87,6 +87,7 @@ class GarentaService
 
     /**
      * Gets all available vehicles from all branches in a specific city for the given dates.
+     * Uses parallel requests to reduce total request time for cities with many branches.
      *
      * @param string $citySlug The slug of the city to search in (e.g., 'istanbul', 'ankara').
      * @param string $pickupDate Formatted as 'DD.MM.YYYY HH:MM'
@@ -119,26 +120,102 @@ class GarentaService
             return [];
         }
 
+        // Reindex array to have sequential numeric keys
+        $branchesInCity = array_values($branchesInCity);
+        
+        // Paralel istek için grup boyutu (aynı anda kaç istek gönderileceği)
+        $batchSize = 5; // Aynı anda 5 istek gönder
+        $totalBranches = count($branchesInCity);
         $allVehicles = [];
-        // Sadece filtrelenmiş şubelerde ara
-        foreach ($branchesInCity as $branch) { 
-            $vehiclesFromBranch = $this->searchVehicles($branch['branchId'], $branch['locationId'], $pickupDate, $dropoffDate);
-            if (!empty($vehiclesFromBranch)) {
-                // Add branch info to each vehicle from this specific branch
-                $vehiclesWithBranchInfo = [];
-                foreach ($vehiclesFromBranch as $vehicle) {
-                    $vehicle['branch_id'] = $branch['branchId'];
-                    $vehicle['location_id'] = $branch['locationId'];
-                    $vehicle['branch_name'] = $branch['name']; // Şube adı eklendi
-                    $vehicle['city_slug'] = $branch['citySlug']; // City slug eklendi
-                    $vehiclesWithBranchInfo[] = $vehicle;
-                }
-                $allVehicles = array_merge($allVehicles, $vehiclesWithBranchInfo);
+        
+        // Şubeleri gruplara bölerek paralel istekler gönder
+        for ($offset = 0; $offset < $totalBranches; $offset += $batchSize) {
+            // Mevcut grup için şubeleri al
+            $currentBatch = array_slice($branchesInCity, $offset, $batchSize);
+            
+            // Paralel istekler için curl_multi kullan
+            $mh = curl_multi_init();
+            $curlHandles = [];
+            $branchData = [];
+            
+            // Her şube için bir curl isteği oluştur
+            foreach ($currentBatch as $index => $branch) {
+                $payload = [
+                    "branchId" => $branch['branchId'],
+                    "locationId" => $branch['locationId'],
+                    "arrivalBranchId" => $branch['branchId'],
+                    "arrivalLocationId" => $branch['locationId'],
+                    "month" => null,
+                    "rentId" => null,
+                    "couponCode" => null,
+                    "collaborationId" => null,
+                    "collaborationReferenceId" => null,
+                    "pickupDate" => $pickupDate,
+                    "dropoffDate" => $dropoffDate
+                ];
+                
+                $url = $this->httpClient->getBaseUri() . 'Search';
+                $ch = curl_init($url);
+                
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                curl_setopt($ch, CURLOPT_POST, true);
+                curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+                curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+                curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+                curl_setopt($ch, CURLOPT_HTTPHEADER, array_merge(
+                    $this->httpClient->getBaseHeaders(),
+                    [
+                        'Content-Type: application/json',
+                        'Content-Length: ' . strlen(json_encode($payload))
+                    ]
+                ));
+                
+                $curlHandles[$index] = $ch;
+                $branchData[$index] = $branch;
+                curl_multi_add_handle($mh, $ch);
             }
-             // Optional: Add a small delay between requests to avoid rate limiting
-             // usleep(500000); // 0.5 seconds
+            
+            // İstekleri çalıştır
+            $running = null;
+            do {
+                curl_multi_exec($mh, $running);
+                curl_multi_select($mh); // CPU kullanımını azaltmak için bekle
+            } while ($running > 0);
+            
+            // Sonuçları topla
+            foreach ($curlHandles as $index => $ch) {
+                $response = curl_multi_getcontent($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                
+                if ($httpCode >= 200 && $httpCode < 300 && $response !== false) {
+                    $vehiclesFromBranch = $this->dataParser->parseVehicles($response);
+                    
+                    if (!empty($vehiclesFromBranch)) {
+                        // Add branch info to each vehicle
+                        $branch = $branchData[$index];
+                        $vehiclesWithBranchInfo = [];
+                        
+                        foreach ($vehiclesFromBranch as $vehicle) {
+                            $vehicle['branch_id'] = $branch['branchId'];
+                            $vehicle['location_id'] = $branch['locationId'];
+                            $vehicle['branch_name'] = $branch['name'];
+                            $vehicle['city_slug'] = $branch['citySlug'];
+                            $vehiclesWithBranchInfo[] = $vehicle;
+                        }
+                        
+                        $allVehicles = array_merge($allVehicles, $vehiclesWithBranchInfo);
+                    }
+                } else {
+                    error_log("HTTP request failed for branch: {$branchData[$index]['name']}. HTTP Code: {$httpCode}");
+                }
+                
+                curl_multi_remove_handle($mh, $ch);
+                curl_close($ch);
+            }
+            
+            curl_multi_close($mh);
         }
-
+        
         // Remove vehicles with null price_pay_now before sorting
         $allVehicles = array_filter($allVehicles, fn($vehicle) => isset($vehicle['price_pay_now']) && $vehicle['price_pay_now'] !== null);
 
